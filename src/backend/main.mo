@@ -140,6 +140,14 @@ actor {
     createdAt : Int;
   };
 
+  // Append-only event log for Match lifecycle transitions.
+  public type MatchEvent = {
+    id : Nat;
+    matchId : Nat;
+    eventType : Text;
+    occurredAt : Int;
+  };
+
   public type UserProfile = AppUser;
 
   public type AdminOperationLog = {
@@ -158,6 +166,7 @@ actor {
     alias : ?Text;
     hashedIdentity : ?Text;
     maskedTag : ?Text;
+    buyerActivated : Bool;
     email : ?Text;
     isApproved : Bool;
     isActive : Bool;
@@ -175,6 +184,15 @@ actor {
     skipped : Nat;
   };
 
+
+  public type SeedDemoResult = {
+    success : Bool;
+    message : Text;
+    fixtureCount : Nat;
+    offerCount : Nat;
+    intentCount : Nat;
+  };
+
   let users = Map.empty<Principal, AppUser>();
   let usersByNat = Map.empty<Nat, AppUser>();
   let products = Map.empty<Nat, Product>();
@@ -186,7 +204,11 @@ actor {
   let sessionTxns = Map.empty<Nat, SessionTxn>();
   let sessionMerkleRoots = Map.empty<Text, SessionMerkleRoot>();
   let sessionsByUser = Map.empty<Principal, [Text]>();
+  // Separate stable map for buyer activation (avoids AppUser schema migration)
+  let buyerActivatedSet = Map.empty<Principal, Bool>();
   let adminOperationLogs = Map.empty<Nat, AdminOperationLog>();
+  // Append-only in-memory log for MatchEvents.
+  let matchEventLog = Map.empty<Nat, MatchEvent>();
 
   var nextUserId = 1;
   var nextProductId = 1;
@@ -198,6 +220,7 @@ actor {
   var nextTxnId = 1;
   var nextMerkleRootId = 1;
   var nextAdminOperationLogId = 1;
+  var nextMatchEventId = 1;
 
   let accessControlState = AccessControl.initState();
   let approvalState = UserApproval.initState(accessControlState);
@@ -277,6 +300,7 @@ actor {
       alias = user.alias;
       hashedIdentity = user.hashedIdentity;
       maskedTag = user.maskedTag;
+      buyerActivated = switch (buyerActivatedSet.get(user.principal)) { case (?b) { b }; case (null) { false } };
       isApproved = user.isApproved;
       isActive = user.isActive;
       createdAt = user.createdAt;
@@ -362,6 +386,39 @@ actor {
     AccessControl.assignRole(accessControlState, caller, caller, #user);
 
     newUser;
+  };
+
+  public shared ({ caller }) func markBuyerActivated(sessionId : Text) : async Bool {
+    let user = switch (getUserByPrincipal(caller)) {
+      case (?u) { u };
+      case (null) { Runtime.trap("User not found") };
+    };
+    switch (user.role) {
+      case (#BUYER) {};
+      case (_) { Runtime.trap("Only buyers can be activated via this endpoint") };
+    };
+    // Idempotent: if already activated, return true without re-appending txn
+    switch (buyerActivatedSet.get(caller)) {
+      case (?true) { return true };
+      case (_) {};
+    };
+    buyerActivatedSet.add(caller, true);
+
+    let txn : SessionTxn = {
+      id = nextTxnId;
+      buyerId = ?user.id;
+      sellerId = null;
+      sessionId = sessionId;
+      eventType = "PAYMENT_CONFIRMED";
+      eventPayload = "{\"role\":\"BUYER\",\"userId\":" # user.id.toText() # ",\"event\":\"UPI_MOCK_PAYMENT\"}";
+      nonce = hashText(sessionId # nextTxnId.toText() # getCurrentTime().toText());
+      nonceSuffix = getMaskedTag(hashText(sessionId # nextTxnId.toText()));
+      createdAt = getCurrentTime();
+    };
+    sessionTxns.add(nextTxnId, txn);
+    nextTxnId += 1;
+
+    true;
   };
 
   public shared ({ caller }) func registerSeller(businessName : Text, email : Text, sessionId : Text) : async AppUser {
@@ -772,6 +829,10 @@ actor {
     if (not isApprovedBuyer(caller)) {
       Runtime.trap("Unauthorized: Only approved buyers can create intents");
     };
+    let isActivated = switch (buyerActivatedSet.get(caller)) { case (?b) { b }; case (null) { false } };
+    if (not isActivated) {
+      Runtime.trap("BUYER_NOT_ACTIVATED: Please complete the mock UPI payment step to activate your account before creating intents.");
+    };
 
     let user = switch (getUserByPrincipal(caller)) {
       case (?u) { u };
@@ -870,6 +931,17 @@ actor {
     };
 
     matches.add(nextMatchId, newMatch);
+
+    // Append a MATCH_CREATED event to the immutable event log.
+    let evt : MatchEvent = {
+      id = nextMatchEventId;
+      matchId = nextMatchId;
+      eventType = "MATCH_CREATED";
+      occurredAt = getCurrentTime();
+    };
+    matchEventLog.add(nextMatchEventId, evt);
+    nextMatchEventId += 1;
+
     nextMatchId += 1;
   };
 
@@ -942,6 +1014,94 @@ actor {
       case (null) { Runtime.trap("Match not found") };
     };
   };
+
+  // Read the append-only MatchEvent log for a given match (admin only).
+  public query ({ caller }) func adminListMatchEvents(matchId : Nat) : async [MatchEvent] {
+    if (not isAppAdmin(caller)) {
+      Runtime.trap("Unauthorized: Admin only");
+    };
+    let allEvents = matchEventLog.values().toArray();
+    allEvents.filter<MatchEvent>(func(e) { e.matchId == matchId });
+  };
+  public type AdminMarkDisputedResult = { success : Bool; reason : Text };
+  public type AdminMarkRefundedResult = { success : Bool; reason : Text };
+
+  // Mark a Match as DISPUTED (admin only, idempotent). Appends MATCH_DISPUTED event.
+  public shared ({ caller }) func adminMarkMatchDisputed(matchId : Nat, disputeReason : ?Text) : async AdminMarkDisputedResult {
+    if (not isAppAdmin(caller)) {
+      Runtime.trap("Unauthorized: Admin only");
+    };
+    switch (matches.get(matchId)) {
+      case (null) { { success = false; reason = "Match not found" } };
+      case (?match) {
+        if (match.status == "DISPUTED") {
+          return { success = true; reason = "Already DISPUTED (no-op)" };
+        };
+        let reason = switch (disputeReason) { case (?r) { r }; case (null) { "" } };
+        let updated = {
+          id = match.id;
+          buyerIntentId = match.buyerIntentId;
+          sellerProductOfferId = match.sellerProductOfferId;
+          fixtureId = match.fixtureId;
+          agreedPrice = match.agreedPrice;
+          quantity = match.quantity;
+          status = "DISPUTED";
+          settlementStatus = match.settlementStatus;
+          createdAt = match.createdAt;
+          updatedAt = getCurrentTime();
+        };
+        matches.add(matchId, updated);
+        let evt : MatchEvent = {
+          id = nextMatchEventId;
+          matchId;
+          eventType = "MATCH_DISPUTED";
+          occurredAt = getCurrentTime();
+        };
+        matchEventLog.add(nextMatchEventId, evt);
+        nextMatchEventId += 1;
+        { success = true; reason = if (reason == "") { "Marked as DISPUTED" } else { "Dispute reason: " # reason } };
+      };
+    };
+  };
+
+  // Mark a Match as REFUNDED (admin only, idempotent). Appends MATCH_REFUNDED event.
+  public shared ({ caller }) func adminMarkMatchRefunded(matchId : Nat) : async AdminMarkRefundedResult {
+    if (not isAppAdmin(caller)) {
+      Runtime.trap("Unauthorized: Admin only");
+    };
+    switch (matches.get(matchId)) {
+      case (null) { { success = false; reason = "Match not found" } };
+      case (?match) {
+        if (match.status == "REFUNDED") {
+          return { success = true; reason = "Already REFUNDED (no-op)" };
+        };
+        let updated = {
+          id = match.id;
+          buyerIntentId = match.buyerIntentId;
+          sellerProductOfferId = match.sellerProductOfferId;
+          fixtureId = match.fixtureId;
+          agreedPrice = match.agreedPrice;
+          quantity = match.quantity;
+          status = "REFUNDED";
+          settlementStatus = match.settlementStatus;
+          createdAt = match.createdAt;
+          updatedAt = getCurrentTime();
+        };
+        matches.add(matchId, updated);
+        let evt : MatchEvent = {
+          id = nextMatchEventId;
+          matchId;
+          eventType = "MATCH_REFUNDED";
+          occurredAt = getCurrentTime();
+        };
+        matchEventLog.add(nextMatchEventId, evt);
+        nextMatchEventId += 1;
+        { success = true; reason = "Marked as REFUNDED" };
+      };
+    };
+  };
+
+
 
   public query ({ caller }) func listMySessionTxns(sessionId : Text) : async [SessionTxn] {
     let userSessions = switch (sessionsByUser.get(caller)) {
@@ -1272,5 +1432,103 @@ actor {
     nextAdminOperationLogId += 1;
 
     { matched; skipped };
+  };
+
+  // ── Admin seed helper ──────────────────────────────────────────────────────
+  public shared ({ caller }) func adminSeedDemoData() : async SeedDemoResult {
+    if (not isAppAdmin(caller)) {
+      Runtime.trap("Unauthorized: Admin only");
+    };
+
+    // Guard: skip if any fixtures, sellers, or buyer intents already exist
+    let allUsers = usersByNat.values().toArray();
+    let hasSellers = allUsers.filter<AppUser>(func(u) { u.role == #SELLER }).size() > 0;
+    if (fixtures.size() > 0 or hasSellers or buyerIntents.size() > 0) {
+      return { success = false; message = "Demo seed skipped: data already present"; fixtureCount = 0; offerCount = 0; intentCount = 0 };
+    };
+
+    let now = getCurrentTime();
+    let dummyPrincipal = Principal.fromText("2vxsx-fae");
+
+    // --- Demo Product ---
+    let prodId = nextProductId;
+    products.add(prodId, { id = prodId; title = "Demo Product Alpha"; description = "Sample demo product for testing the exchange flow"; category = "Electronics"; baseSkuCode = "DEMO-ALPHA-001"; attributes = "{}"; createdAt = now; updatedAt = now });
+    nextProductId += 1;
+
+    // --- Demo Sellers (4) ---
+    let s1Id = nextUserId;
+    usersByNat.add(s1Id, { id = s1Id; principal = dummyPrincipal; role = #SELLER; email = ?"demo-seller-1@demo.test"; mobile = null; businessName = ?"Demo Seller 1"; alias = ?"Demo Seller 1"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    let s2Id = nextUserId;
+    usersByNat.add(s2Id, { id = s2Id; principal = dummyPrincipal; role = #SELLER; email = ?"demo-seller-2@demo.test"; mobile = null; businessName = ?"Demo Seller 2"; alias = ?"Demo Seller 2"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    let s3Id = nextUserId;
+    usersByNat.add(s3Id, { id = s3Id; principal = dummyPrincipal; role = #SELLER; email = ?"demo-seller-3@demo.test"; mobile = null; businessName = ?"Demo Seller 3"; alias = ?"Demo Seller 3"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    let s4Id = nextUserId;
+    usersByNat.add(s4Id, { id = s4Id; principal = dummyPrincipal; role = #SELLER; email = ?"demo-seller-4@demo.test"; mobile = null; businessName = ?"Demo Seller 4"; alias = ?"Demo Seller 4"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+
+    // --- Demo SellerProductOffers (4, varied price/warranty/service) ---
+    sellerProductOffers.add(nextOfferId, { id = nextOfferId; sellerId = s1Id; productId = prodId; priceMrp = 2000.0; priceOffer = 1800.0; quantityAvailable = 50; qualityScore = 80; serviceScore = 85; warrantyMonths = 12; shippingTimeDays = 5; termsSummary = "Demo terms – Seller 1"; isActive = true; createdAt = now; updatedAt = now });
+    nextOfferId += 1;
+    sellerProductOffers.add(nextOfferId, { id = nextOfferId; sellerId = s2Id; productId = prodId; priceMrp = 2500.0; priceOffer = 2100.0; quantityAvailable = 30; qualityScore = 88; serviceScore = 92; warrantyMonths = 24; shippingTimeDays = 3; termsSummary = "Demo terms – Seller 2"; isActive = true; createdAt = now; updatedAt = now });
+    nextOfferId += 1;
+    sellerProductOffers.add(nextOfferId, { id = nextOfferId; sellerId = s3Id; productId = prodId; priceMrp = 2200.0; priceOffer = 1950.0; quantityAvailable = 20; qualityScore = 75; serviceScore = 78; warrantyMonths = 18; shippingTimeDays = 7; termsSummary = "Demo terms – Seller 3"; isActive = true; createdAt = now; updatedAt = now });
+    nextOfferId += 1;
+    sellerProductOffers.add(nextOfferId, { id = nextOfferId; sellerId = s4Id; productId = prodId; priceMrp = 2000.0; priceOffer = 1700.0; quantityAvailable = 100; qualityScore = 65; serviceScore = 70; warrantyMonths = 6; shippingTimeDays = 10; termsSummary = "Demo terms – Seller 4"; isActive = true; createdAt = now; updatedAt = now });
+    nextOfferId += 1;
+
+    // --- Demo Fixtures (2) ---
+    let thirtyDaysNs : Int = 2592000000000000;
+    fixtures.add(nextFixtureId, { id = nextFixtureId; name = "Demo Fixture A"; productId = prodId; groupASellerIds = [s1Id, s2Id]; groupBSellerIds = [s3Id, s4Id]; startsAt = now; endsAt = now + thirtyDaysNs; status = "ACTIVE"; scoringFormulaVersion = "v1"; createdAt = now; updatedAt = now });
+    nextFixtureId += 1;
+    fixtures.add(nextFixtureId, { id = nextFixtureId; name = "Demo Fixture B"; productId = prodId; groupASellerIds = [s1Id, s3Id]; groupBSellerIds = [s2Id, s4Id]; startsAt = now; endsAt = now + thirtyDaysNs; status = "PLANNED"; scoringFormulaVersion = "v1"; createdAt = now; updatedAt = now });
+    nextFixtureId += 1;
+
+    // --- Demo Buyers (7) + BuyerIntents ---
+    let b1Id = nextUserId;
+    usersByNat.add(b1Id, { id = b1Id; principal = dummyPrincipal; role = #BUYER; email = ?"demo-buyer-1@demo.test"; mobile = null; businessName = null; alias = ?"Demo Buyer 1"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    buyerIntents.add(nextBuyerIntentId, { id = nextBuyerIntentId; buyerId = b1Id; productId = prodId; requestedQuantity = 1; constraintsJson = "{\"demo\":true}"; status = "OPEN"; createdAt = now; updatedAt = now });
+    nextBuyerIntentId += 1;
+
+    let b2Id = nextUserId;
+    usersByNat.add(b2Id, { id = b2Id; principal = dummyPrincipal; role = #BUYER; email = ?"demo-buyer-2@demo.test"; mobile = null; businessName = null; alias = ?"Demo Buyer 2"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    buyerIntents.add(nextBuyerIntentId, { id = nextBuyerIntentId; buyerId = b2Id; productId = prodId; requestedQuantity = 2; constraintsJson = "{\"demo\":true}"; status = "OPEN"; createdAt = now; updatedAt = now });
+    nextBuyerIntentId += 1;
+
+    let b3Id = nextUserId;
+    usersByNat.add(b3Id, { id = b3Id; principal = dummyPrincipal; role = #BUYER; email = ?"demo-buyer-3@demo.test"; mobile = null; businessName = null; alias = ?"Demo Buyer 3"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    buyerIntents.add(nextBuyerIntentId, { id = nextBuyerIntentId; buyerId = b3Id; productId = prodId; requestedQuantity = 3; constraintsJson = "{\"demo\":true}"; status = "OPEN"; createdAt = now; updatedAt = now });
+    nextBuyerIntentId += 1;
+
+    let b4Id = nextUserId;
+    usersByNat.add(b4Id, { id = b4Id; principal = dummyPrincipal; role = #BUYER; email = ?"demo-buyer-4@demo.test"; mobile = null; businessName = null; alias = ?"Demo Buyer 4"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    buyerIntents.add(nextBuyerIntentId, { id = nextBuyerIntentId; buyerId = b4Id; productId = prodId; requestedQuantity = 1; constraintsJson = "{\"demo\":true}"; status = "OPEN"; createdAt = now; updatedAt = now });
+    nextBuyerIntentId += 1;
+
+    let b5Id = nextUserId;
+    usersByNat.add(b5Id, { id = b5Id; principal = dummyPrincipal; role = #BUYER; email = ?"demo-buyer-5@demo.test"; mobile = null; businessName = null; alias = ?"Demo Buyer 5"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    buyerIntents.add(nextBuyerIntentId, { id = nextBuyerIntentId; buyerId = b5Id; productId = prodId; requestedQuantity = 5; constraintsJson = "{\"demo\":true}"; status = "OPEN"; createdAt = now; updatedAt = now });
+    nextBuyerIntentId += 1;
+
+    let b6Id = nextUserId;
+    usersByNat.add(b6Id, { id = b6Id; principal = dummyPrincipal; role = #BUYER; email = ?"demo-buyer-6@demo.test"; mobile = null; businessName = null; alias = ?"Demo Buyer 6"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    buyerIntents.add(nextBuyerIntentId, { id = nextBuyerIntentId; buyerId = b6Id; productId = prodId; requestedQuantity = 2; constraintsJson = "{\"demo\":true}"; status = "OPEN"; createdAt = now; updatedAt = now });
+    nextBuyerIntentId += 1;
+
+    let b7Id = nextUserId;
+    usersByNat.add(b7Id, { id = b7Id; principal = dummyPrincipal; role = #BUYER; email = ?"demo-buyer-7@demo.test"; mobile = null; businessName = null; alias = ?"Demo Buyer 7"; hashedIdentity = null; maskedTag = null; isApproved = true; isActive = true; createdAt = now; updatedAt = now });
+    nextUserId += 1;
+    buyerIntents.add(nextBuyerIntentId, { id = nextBuyerIntentId; buyerId = b7Id; productId = prodId; requestedQuantity = 4; constraintsJson = "{\"demo\":true}"; status = "OPEN"; createdAt = now; updatedAt = now });
+    nextBuyerIntentId += 1;
+
+    { success = true; message = "Demo data created"; fixtureCount = 2; offerCount = 4; intentCount = 7 };
   };
 };

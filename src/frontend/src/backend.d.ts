@@ -91,12 +91,45 @@ export interface AdminOperationLog {
     triggeredBy: string;
     operation: string;
 }
+export interface AdminMarkDisputedResult {
+    success: boolean;
+    reason: string;
+}
+export interface AdminMarkRefundedResult {
+    success: boolean;
+    reason: string;
+}
 export interface AutoMatchResult {
     skipped: bigint;
     matched: bigint;
 }
+export interface PreviewAutoMatchResult {
+    intentFound: boolean;
+    offer: SellerProductOffer | null;
+}
+export interface AdminCreateMatchResult {
+    created: boolean;
+    reason: string;
+    matchId: bigint;
+    sellerId: bigint;
+    productId: bigint;
+}
+export interface SeedDemoResult {
+    success: boolean;
+    message: string;
+    fixtureCount: bigint;
+    offerCount: bigint;
+    intentCount: bigint;
+}
+export interface MatchEvent {
+    id: bigint;
+    matchId: bigint;
+    eventType: string;
+    occurredAt: bigint;
+}
 export interface AppUser {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -127,6 +160,7 @@ export interface SessionTxn {
 }
 export interface UserWithoutMobile {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -141,6 +175,7 @@ export interface UserWithoutMobile {
 }
 export interface UserProfile {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -182,12 +217,16 @@ export enum UserRole {
 }
 export interface backendInterface {
     adminApproveUser(userId: bigint): Promise<void>;
+    adminSeedDemoData(): Promise<SeedDemoResult>;
+    adminCreateMatchFromIntent(intentId: bigint): Promise<AdminCreateMatchResult>;
     adminListAllIntents(): Promise<Array<BuyerIntent>>;
     adminListAllMatches(): Promise<Array<Match>>;
     adminListAllOffers(): Promise<Array<SellerProductOffer>>;
+    adminListMatchEvents(matchId: bigint): Promise<Array<MatchEvent>>;
     adminListOperationLogs(): Promise<Array<AdminOperationLog>>;
     adminListSessionTxns(sessionId: string): Promise<Array<SessionTxn>>;
     adminListUsers(role: string | null): Promise<Array<UserWithoutMobile>>;
+    adminPreviewAutoMatch(intentId: bigint): Promise<PreviewAutoMatchResult>;
     adminRecomputeLeaderboard(): Promise<OperationResult>;
     adminRunAutoMatching(): Promise<AutoMatchResult>;
     adminSetUserActive(userId: bigint, active: boolean): Promise<void>;
@@ -218,6 +257,7 @@ export interface backendInterface {
     listOffersByProduct(productId: bigint): Promise<Array<SellerProductOffer>>;
     listProducts(): Promise<Array<Product>>;
     registerBuyer(alias: string | null, mobile: string, sessionId: string): Promise<AppUser>;
+    markBuyerActivated(sessionId: string): Promise<boolean>;
     registerSeller(businessName: string, email: string, sessionId: string): Promise<AppUser>;
     requestApproval(): Promise<void>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
@@ -226,6 +266,8 @@ export interface backendInterface {
     updateFixtureStatus(id: bigint, status: string): Promise<void>;
     updateIntentStatus(id: bigint, status: string): Promise<void>;
     updateMatchStatus(id: bigint, status: string): Promise<void>;
+    adminMarkMatchDisputed(matchId: bigint, disputeReason: [] | [string]): Promise<AdminMarkDisputedResult>;
+    adminMarkMatchRefunded(matchId: bigint): Promise<AdminMarkRefundedResult>;
     updateOffer(id: bigint, productId: bigint, priceMrp: number, priceOffer: number, quantityAvailable: bigint, qualityScore: bigint, serviceScore: bigint, warrantyMonths: bigint, shippingTimeDays: bigint, termsSummary: string): Promise<void>;
     updateProduct(id: bigint, title: string, description: string, category: string, baseSkuCode: string, attributes: string): Promise<void>;
 }

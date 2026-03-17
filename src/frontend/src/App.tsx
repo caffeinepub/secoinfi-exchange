@@ -7,6 +7,7 @@ import {
 import Layout from "./components/Layout";
 import AdminDashboard from "./pages/AdminDashboard";
 import BuyerDashboard from "./pages/BuyerDashboard";
+import BuyerIntentDetail from "./pages/BuyerIntentDetail";
 import BuyerOrders from "./pages/BuyerOrders";
 import FixturesPage from "./pages/FixturesPage";
 import LandingPage from "./pages/LandingPage";
@@ -74,6 +75,12 @@ const buyerDashboardRoute = createRoute({
   component: BuyerDashboard,
 });
 
+const buyerIntentDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/buyer/intents/$id",
+  component: BuyerIntentDetail,
+});
+
 const newBuyerIntentRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/buyer/intents/new",
@@ -125,6 +132,7 @@ const routeTree = rootRoute.addChildren([
   fixturesRoute,
   leaderboardRoute,
   buyerDashboardRoute,
+  buyerIntentDetailRoute,
   newBuyerIntentRoute,
   buyerOrdersRoute,
   sellerDashboardRoute,

@@ -179,6 +179,7 @@ export interface AutoMatchResult {
 }
 export interface AppUser {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -209,6 +210,7 @@ export interface SessionTxn {
 }
 export interface UserWithoutMobile {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -223,6 +225,7 @@ export interface UserWithoutMobile {
 }
 export interface UserProfile {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -265,6 +268,7 @@ export enum UserRole {
 export interface backendInterface {
     _initializeAccessControlWithSecret(userSecret: string): Promise<void>;
     adminApproveUser(userId: bigint): Promise<void>;
+    adminSeedDemoData(): Promise<SeedDemoResult>;
     adminListAllIntents(): Promise<Array<BuyerIntent>>;
     adminListAllMatches(): Promise<Array<Match>>;
     adminListAllOffers(): Promise<Array<SellerProductOffer>>;
@@ -301,6 +305,7 @@ export interface backendInterface {
     listOffersByProduct(productId: bigint): Promise<Array<SellerProductOffer>>;
     listProducts(): Promise<Array<Product>>;
     registerBuyer(alias: string | null, mobile: string, sessionId: string): Promise<AppUser>;
+    markBuyerActivated(sessionId: string): Promise<boolean>;
     registerSeller(businessName: string, email: string, sessionId: string): Promise<AppUser>;
     requestApproval(): Promise<void>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
@@ -340,6 +345,20 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.adminApproveUser(arg0);
+            return result;
+        }
+    }
+    async adminSeedDemoData(): Promise<SeedDemoResult> {
+        if (this.processError) {
+            try {
+                const result = await (this.actor as any).adminSeedDemoData();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await (this.actor as any).adminSeedDemoData();
             return result;
         }
     }
@@ -847,6 +866,20 @@ export class Backend implements backendInterface {
             return from_candid_AppUser_n32(this._uploadFile, this._downloadFile, result);
         }
     }
+    async markBuyerActivated(arg0: string): Promise<boolean> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.markBuyerActivated(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.markBuyerActivated(arg0);
+            return result;
+        }
+    }
     async registerSeller(arg0: string, arg1: string, arg2: string): Promise<AppUser> {
         if (this.processError) {
             try {
@@ -1038,6 +1071,7 @@ function from_candid_opt_n4(_uploadFile: (file: ExternalBlob) => Promise<Uint8Ar
 }
 function from_candid_record_n11(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias: [] | [string];
@@ -1051,6 +1085,7 @@ function from_candid_record_n11(_uploadFile: (file: ExternalBlob) => Promise<Uin
     updatedAt: bigint;
 }): {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -1065,6 +1100,7 @@ function from_candid_record_n11(_uploadFile: (file: ExternalBlob) => Promise<Uin
 } {
     return {
         id: value.id,
+        buyerActivated: value.buyerActivated,
         isApproved: value.isApproved,
         principal: value.principal,
         alias: record_opt_to_undefined(from_candid_opt_n12(_uploadFile, _downloadFile, value.alias)),
@@ -1080,6 +1116,7 @@ function from_candid_record_n11(_uploadFile: (file: ExternalBlob) => Promise<Uin
 }
 function from_candid_record_n20(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias: [] | [string];
@@ -1094,6 +1131,7 @@ function from_candid_record_n20(_uploadFile: (file: ExternalBlob) => Promise<Uin
     mobile: [] | [string];
 }): {
     id: bigint;
+    buyerActivated: boolean;
     isApproved: boolean;
     principal: Principal;
     alias?: string;
@@ -1109,6 +1147,7 @@ function from_candid_record_n20(_uploadFile: (file: ExternalBlob) => Promise<Uin
 } {
     return {
         id: value.id,
+        buyerActivated: value.buyerActivated,
         isApproved: value.isApproved,
         principal: value.principal,
         alias: record_opt_to_undefined(from_candid_opt_n12(_uploadFile, _downloadFile, value.alias)),

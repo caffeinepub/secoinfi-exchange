@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Plus, ShoppingCart, X } from "lucide-react";
+import { ChevronRight, Plus, ShoppingCart, X } from "lucide-react";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { AppRole } from "../backend";
@@ -12,15 +12,29 @@ import { useMyIntents, useProducts, useProfile } from "../hooks/useQueries";
 import { formatNano } from "../utils/session";
 
 function statusBadge(status: string) {
-  const map: Record<string, string> = {
-    OPEN: "bg-chart-3/20 text-chart-3 border-chart-3/30",
-    MATCHED: "bg-primary/20 text-primary border-primary/30",
-    FULFILLED: "bg-muted text-muted-foreground",
-    CANCELLED: "bg-destructive/20 text-destructive border-destructive/30",
+  const map: Record<string, { cls: string; label: string }> = {
+    OPEN: {
+      cls: "bg-chart-3/20 text-chart-3 border-chart-3/30",
+      label: "Open",
+    },
+    MATCHED: {
+      cls: "bg-primary/20 text-primary border-primary/30",
+      label: "Matched",
+    },
+    MATCHED_AUTO: {
+      cls: "bg-amber-500/20 text-amber-600 border-amber-500/30 dark:text-amber-400",
+      label: "Auto-matched",
+    },
+    FULFILLED: { cls: "bg-muted text-muted-foreground", label: "Fulfilled" },
+    CANCELLED: {
+      cls: "bg-destructive/20 text-destructive border-destructive/30",
+      label: "Cancelled",
+    },
   };
+  const entry = map[status];
   return (
-    <Badge className={map[status] || "bg-muted text-muted-foreground"}>
-      {status}
+    <Badge className={entry?.cls || "bg-muted text-muted-foreground"}>
+      {entry?.label || status}
     </Badge>
   );
 }
@@ -105,53 +119,83 @@ export default function BuyerDashboard() {
       )}
 
       <div className="space-y-4">
-        {(intents || []).map((intent, i) => (
-          <div
-            key={intent.id.toString()}
-            className="bg-card border border-border/60 rounded-xl p-5"
-            data-ocid={`buyer-dashboard.item.${i + 1}`}
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1">
-                <div className="flex items-center gap-3 mb-2">
-                  {statusBadge(intent.status)}
-                  <span className="text-sm text-muted-foreground">
-                    Product:{" "}
-                    <span className="text-foreground">
-                      {productMap.get(intent.productId.toString()) ||
-                        `#${intent.productId.toString()}`}
+        {(intents || []).map((intent, i) => {
+          const isAutoMatched = intent.status === "MATCHED_AUTO";
+          const cardContent = (
+            <div
+              className={`bg-card border rounded-xl p-5 ${
+                isAutoMatched
+                  ? "border-amber-500/40 hover:border-amber-500/70 cursor-pointer transition-colors"
+                  : "border-border/60"
+              }`}
+              data-ocid={`buyer-dashboard.item.${i + 1}`}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    {statusBadge(intent.status)}
+                    <span className="text-sm text-muted-foreground">
+                      Product:{" "}
+                      <span className="text-foreground">
+                        {productMap.get(intent.productId.toString()) ||
+                          `#${intent.productId.toString()}`}
+                      </span>
                     </span>
-                  </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Qty:{" "}
+                    <span className="text-foreground">
+                      {intent.requestedQuantity.toString()}
+                    </span>
+                    {" · "}
+                    Created: {formatNano(intent.createdAt)}
+                  </p>
+                  {intent.constraintsJson &&
+                    intent.constraintsJson !== "{}" && (
+                      <pre className="mt-2 text-xs bg-muted/40 rounded p-2 text-muted-foreground overflow-auto">
+                        {intent.constraintsJson}
+                      </pre>
+                    )}
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  Qty:{" "}
-                  <span className="text-foreground">
-                    {intent.requestedQuantity.toString()}
-                  </span>
-                  {" · "}
-                  Created: {formatNano(intent.createdAt)}
-                </p>
-                {intent.constraintsJson && intent.constraintsJson !== "{}" && (
-                  <pre className="mt-2 text-xs bg-muted/40 rounded p-2 text-muted-foreground overflow-auto">
-                    {intent.constraintsJson}
-                  </pre>
-                )}
+                <div className="flex items-center gap-2">
+                  {isAutoMatched && (
+                    <ChevronRight className="w-4 h-4 text-amber-500" />
+                  )}
+                  {intent.status === "OPEN" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive hover:bg-destructive/10"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        cancelMutation.mutate(intent.id);
+                      }}
+                      disabled={cancelMutation.isPending}
+                      data-ocid={`buyer-dashboard.delete_button.${i + 1}`}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
               </div>
-              {intent.status === "OPEN" && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-destructive hover:bg-destructive/10"
-                  onClick={() => cancelMutation.mutate(intent.id)}
-                  disabled={cancelMutation.isPending}
-                  data-ocid={`buyer-dashboard.delete_button.${i + 1}`}
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              )}
             </div>
-          </div>
-        ))}
+          );
+
+          if (isAutoMatched) {
+            return (
+              <Link
+                key={intent.id.toString()}
+                to="/buyer/intents/$id"
+                params={{ id: intent.id.toString() }}
+                data-ocid={`buyer-dashboard.link.${i + 1}`}
+              >
+                {cardContent}
+              </Link>
+            );
+          }
+
+          return <div key={intent.id.toString()}>{cardContent}</div>;
+        })}
       </div>
     </div>
   );

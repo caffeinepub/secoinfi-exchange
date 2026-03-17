@@ -26,15 +26,19 @@ export default function RegisterBuyer() {
 
   const [alias, setAlias] = useState("");
   const [mobile, setMobile] = useState("");
+  const [city, setCity] = useState("");
   const [registered, setRegistered] = useState<{
     maskedTag: string;
     nonceSuffix: string;
   } | null>(null);
-  const [upiPaid, setUpiPaid] = useState(false);
+  const [activated, setActivated] = useState(false);
 
   const registerMutation = useMutation({
     mutationFn: async () => {
       if (!actor) throw new Error("Not connected");
+      if (!/^\d{10}$/.test(mobile.trim())) {
+        throw new Error("Mobile must be exactly 10 digits");
+      }
       const sessionId = getOrCreateSessionId();
       return actor.registerBuyer(
         alias.trim() || null,
@@ -44,11 +48,26 @@ export default function RegisterBuyer() {
     },
     onSuccess: (user) => {
       qc.invalidateQueries({ queryKey: ["profile"] });
+      const tag = (user.maskedTag as string | undefined | null) ?? "????";
       setRegistered({
-        maskedTag: user.maskedTag || "????",
+        maskedTag: tag,
         nonceSuffix: "reg1",
       });
       toast.success("Registration successful!");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: async () => {
+      if (!actor) throw new Error("Not connected");
+      const sessionId = getOrCreateSessionId();
+      return actor.markBuyerActivated(sessionId);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["profile"] });
+      setActivated(true);
+      toast.success("Payment confirmed! Account activated.");
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -82,24 +101,39 @@ export default function RegisterBuyer() {
       <div className="container mx-auto px-4 py-24 flex flex-col items-center text-center max-w-lg">
         <CheckCircle className="w-14 h-14 text-primary mb-4" />
         <h1 className="text-3xl font-bold mb-2">Welcome to Secoinfi!</h1>
-        <p className="text-muted-foreground mb-8">
-          Your buyer account has been created. Your anonymous ID:
+        <p className="text-muted-foreground mb-6">
+          Your buyer account has been created. Your anonymous identity tag:
         </p>
-        <div className="flex items-center gap-3 bg-card border border-primary/30 rounded-xl px-6 py-4 mb-8">
+
+        {/* Masked tag display */}
+        <div
+          className="flex items-center gap-3 bg-card border border-primary/30 rounded-xl px-6 py-4 mb-8"
+          data-ocid="register.masked_tag.card"
+        >
           <span className="text-muted-foreground text-sm">Masked Tag:</span>
           <Badge className="font-mono text-base bg-primary/10 text-primary border-primary/30">
             …{registered.maskedTag}
           </Badge>
+          <span className="text-xs text-muted-foreground">
+            (your anonymous buyer ID)
+          </span>
         </div>
-        {!upiPaid && (
-          <Card className="w-full mb-6 border-accent/30">
+
+        {!activated ? (
+          <Card
+            className="w-full mb-6 border-accent/30"
+            data-ocid="register.activation.card"
+          >
             <CardHeader>
               <CardTitle className="text-lg text-accent">
                 Activate Your Waitlist Entry
               </CardTitle>
               <CardDescription>
-                Pay the Arbitrage Fee (difference between min price and max MRP)
-                to activate your account and be eligible for matching.
+                To activate your buyer waitlist, pay the arbitrage fee to UPI ID{" "}
+                <strong className="text-foreground font-mono">
+                  secoin@uboi
+                </strong>{" "}
+                and then click ‘Mark as Paid’.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -111,21 +145,36 @@ export default function RegisterBuyer() {
                 integration coming soon.)
               </p>
               <Button
-                onClick={() => setUpiPaid(true)}
+                onClick={() => activateMutation.mutate()}
+                disabled={activateMutation.isPending}
                 className="w-full"
                 data-ocid="register.confirm_button"
               >
-                Mark as Paid
+                {activateMutation.isPending && (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                )}
+                {activateMutation.isPending ? "Confirming…" : "Mark as Paid"}
               </Button>
+              {activateMutation.isError && (
+                <p
+                  className="text-sm text-destructive"
+                  data-ocid="register.activation.error_state"
+                >
+                  {(activateMutation.error as Error).message}
+                </p>
+              )}
             </CardContent>
           </Card>
-        )}
-        {upiPaid && (
-          <div className="bg-primary/10 border border-primary/30 rounded-xl p-4 mb-6 text-primary text-sm">
+        ) : (
+          <div
+            className="bg-primary/10 border border-primary/30 rounded-xl p-4 mb-6 text-primary text-sm"
+            data-ocid="register.activation.success_state"
+          >
             ✓ Payment confirmed. Your account is now active and eligible for
             matching!
           </div>
         )}
+
         <Button
           onClick={() => navigate({ to: "/products" })}
           variant="outline"
@@ -151,15 +200,17 @@ export default function RegisterBuyer() {
         <CardContent className="pt-6 space-y-5">
           <div className="space-y-2">
             <Label htmlFor="alias">
-              Alias{" "}
-              <span className="text-muted-foreground text-xs">(optional)</span>
+              Display Name{" "}
+              <span className="text-muted-foreground text-xs">
+                (optional alias)
+              </span>
             </Label>
             <Input
               id="alias"
               placeholder="How should we call you?"
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
-              data-ocid="register.input"
+              data-ocid="register.alias.input"
             />
           </div>
           <div className="space-y-2">
@@ -171,14 +222,29 @@ export default function RegisterBuyer() {
               type="tel"
               placeholder="10-digit mobile number"
               value={mobile}
-              onChange={(e) => setMobile(e.target.value)}
+              onChange={(e) =>
+                setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))
+              }
               maxLength={10}
-              data-ocid="register.input"
+              data-ocid="register.mobile.input"
             />
             <p className="text-xs text-muted-foreground flex items-center gap-1">
               <Lock className="w-3 h-3" /> Encrypted &amp; never visible to
               sellers
             </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="city">
+              City{" "}
+              <span className="text-muted-foreground text-xs">(optional)</span>
+            </Label>
+            <Input
+              id="city"
+              placeholder="e.g. Mumbai"
+              value={city}
+              onChange={(e) => setCity(e.target.value)}
+              data-ocid="register.city.input"
+            />
           </div>
           <Button
             className="w-full"

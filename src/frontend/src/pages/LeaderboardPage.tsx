@@ -8,6 +8,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useParams } from "@tanstack/react-router";
 import {
   ArrowDown,
@@ -44,6 +45,9 @@ export default function LeaderboardPage() {
     col: "score",
     dir: "desc",
   });
+  const [viewMode, setViewMode] = useState<
+    "balanced" | "cheapest" | "best_service"
+  >("balanced");
 
   const handleSort = (col: SortCol) => {
     setSort((prev) =>
@@ -58,6 +62,15 @@ export default function LeaderboardPage() {
   );
 
   const sorted = [...(entries || [])].sort((a, b) => {
+    if (viewMode === "cheapest") {
+      return b.priceScore - a.priceScore;
+    }
+    if (viewMode === "best_service") {
+      const svcDiff = b.serviceScore - a.serviceScore;
+      if (svcDiff !== 0) return svcDiff;
+      return b.overallScore - a.overallScore;
+    }
+    // "balanced" — use column sort
     let diff = 0;
     if (sort.col === "price") diff = a.priceScore - b.priceScore;
     else if (sort.col === "reliability") diff = a.qualityScore - b.qualityScore;
@@ -124,6 +137,47 @@ export default function LeaderboardPage() {
             Group B ({fixture?.groupBSellerIds.length ?? 0} sellers)
           </div>
         </div>
+      </div>
+
+      <p className="text-xs text-muted-foreground mt-2 mb-4 italic">
+        Top-ranked sellers are more likely to receive auto-matched buyer
+        intents.
+      </p>
+
+      <div className="flex items-center gap-2 mb-4">
+        <span className="text-xs text-muted-foreground font-medium">
+          Sort by:
+        </span>
+        <ToggleGroup
+          type="single"
+          value={viewMode}
+          onValueChange={(v) => {
+            if (v) setViewMode(v as "balanced" | "cheapest" | "best_service");
+          }}
+          className="h-8"
+        >
+          <ToggleGroupItem
+            value="balanced"
+            className="h-8 text-xs px-3"
+            data-ocid="leaderboard.balanced.toggle"
+          >
+            Balanced
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="cheapest"
+            className="h-8 text-xs px-3"
+            data-ocid="leaderboard.cheapest.toggle"
+          >
+            Cheapest first
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="best_service"
+            className="h-8 text-xs px-3"
+            data-ocid="leaderboard.best_service.toggle"
+          >
+            Best service
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
       {sorted.length === 0 ? (

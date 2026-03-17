@@ -1,3 +1,4 @@
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,9 +11,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { Loader2, Zap } from "lucide-react";
+import { AlertTriangle, Loader2, Zap } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useActor } from "../hooks/useActor";
@@ -39,6 +40,13 @@ export default function NewBuyerIntent() {
     ),
   );
 
+  // Load profile to check buyerActivated
+  const { data: profile, isLoading: profileLoading } = useQuery({
+    queryKey: ["profile"],
+    queryFn: () => actor!.getMyProfile(),
+    enabled: !!actor,
+  });
+
   const mutation = useMutation({
     mutationFn: async () => {
       if (!actor) throw new Error("Not connected");
@@ -64,6 +72,45 @@ export default function NewBuyerIntent() {
     },
     onError: (err: Error) => toast.error(err.message),
   });
+
+  if (profileLoading) {
+    return (
+      <div
+        className="container mx-auto px-4 py-16 max-w-lg flex justify-center"
+        data-ocid="intent.loading_state"
+      >
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Gate: buyer must be activated
+  const isActivated = profile?.buyerActivated === true;
+  if (profile && !isActivated) {
+    return (
+      <div className="container mx-auto px-4 py-16 max-w-lg">
+        <Alert
+          variant="destructive"
+          data-ocid="intent.activation_required.error_state"
+        >
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Account not activated</AlertTitle>
+          <AlertDescription>
+            You need to complete the mock UPI payment step before creating
+            intents. Go to{" "}
+            <a
+              href="/register/buyer"
+              className="underline font-medium"
+              data-ocid="intent.activation_required.link"
+            >
+              Buyer Registration
+            </a>{" "}
+            and click “Mark as Paid” to activate your account.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
 
   return (
     <div className="container mx-auto px-4 py-16 max-w-lg">
